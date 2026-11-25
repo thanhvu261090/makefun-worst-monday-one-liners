@@ -58,10 +58,78 @@ def validate_length(text):
     return True
 
 
+def validate_no_double_space(text):
+    """Reject accidental double spaces and tab characters.
+
+    A double space inside a one-liner is almost always a typo, and a tab
+    would break the single-line gate on some judges, so both are refused
+    here with a message naming the offending position.
+    """
+    if "\t" in text:
+        raise ValueError("entry must not contain tab characters")
+    index = text.find("  ")
+    if index != -1:
+        raise ValueError(f"entry has a double space at position {index}")
+    return True
+
+
+def validate_punctuation(text):
+    """Check the entry's punctuation is balanced and ends cleanly.
+
+    Counts opening/closing quotes and requires the line to end with a
+    terminal mark (. ! ?), so a truncated or cut-off line is caught
+    before it is ever written to /output/entry.txt.
+    """
+    # Count quote marks only: an apostrophe inside a word (letter on both
+    # sides, e.g. Friday's) is not a quote mark and must not unbalance
+    # the count.
+    quote_marks = 0
+    for index, char in enumerate(text):
+        if char != "'":
+            continue
+        before = text[index - 1] if index > 0 else " "
+        after = text[index + 1] if index + 1 < len(text) else " "
+        if before.isalpha() and after.isalpha():
+            continue  # apostrophe inside a word, not a quote mark
+        quote_marks += 1
+    if quote_marks % 2 != 0:
+        raise ValueError("entry has an unmatched single quote")
+    if text.count('"') % 2 != 0:
+        raise ValueError("entry has an unmatched double quote")
+    if text[-1] not in ".!?":
+        raise ValueError("entry must end with a terminal punctuation mark")
+    return True
+
+
+def analyse_entry(text):
+    """Return a small structure report for the entry (words, beats, chars).
+
+    The joke is built in three beats separated by commas, so the report
+    counts the comma-separated beats as a sanity check on the structure
+    as well as the plain word and character counts.
+    """
+    words = text.split()
+    beats = [beat.strip() for beat in text.split(",")]
+    return {
+        "characters": len(text),
+        "words": len(words),
+        "beats": len(beats),
+        "longest_word": max((len(word) for word in words), default=0),
+    }
+
+
 def gate_check(text):
     """Run every kit-gate validation on the entry text before it is written."""
     validate_utf8(text)
-    return validate_length(text)
+    validate_length(text)
+    validate_no_double_space(text)
+    validate_punctuation(text)
+    report = analyse_entry(text)
+    if report["words"] < 5:
+        raise ValueError("entry is too short to carry a joke")
+    if report["beats"] < 2:
+        raise ValueError("entry needs at least two comma-separated beats")
+    return True
 
 
 def write_entry(text, output_path="/output/entry.txt"):
@@ -81,6 +149,10 @@ def self_test():
     writing it a second time and comparing the two files.
     """
     gate_check(ENTRY)
+    report = analyse_entry(ENTRY)
+    assert report["characters"] == 138, f"expected 138 chars, got {report['characters']}"
+    assert report["words"] == 24, f"expected 24 words, got {report['words']}"
+    assert report["beats"] == 3, f"expected 3 beats, got {report['beats']}"
     with tempfile.TemporaryDirectory() as tmp:
         first = os.path.join(tmp, "entry.txt")
         second = os.path.join(tmp, "entry2.txt")
@@ -97,9 +169,53 @@ def self_test():
     return True
 
 
+def self_test_validators():
+    """Second validation pass: prove every validator rejects bad input.
+
+    Feeds a table of deliberately broken entries to the gate and confirms
+    each one raises ValueError, and confirms the good entry passes every
+    individual validator on its own. A validator that never fires is a
+    validator that cannot protect the entry, so this pass checks the
+    negative cases as well as the positive ones.
+    """
+    bad_entries = {
+        "empty": "",
+        "too long": "x" * 141,
+        "two lines": "Monday line one\nMonday line two",
+        "only whitespace": "   ",
+        "leading space": " Monday 9 a.m.",
+        "double space": "Monday  9 a.m.",
+        "tab inside": "Monday\t9 a.m.",
+        "unmatched quote": "Monday 'quick question",
+        "no terminal mark": "Monday 9 a.m. quick question",
+        "one beat only": "Monday happened.",
+    }
+    for name, bad in bad_entries.items():
+        try:
+            gate_check(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"gate accepted bad entry: {name}")
+    # Positive checks: each validator passes the real entry on its own.
+    validate_utf8(ENTRY)
+    validate_length(ENTRY)
+    validate_no_double_space(ENTRY)
+    validate_punctuation(ENTRY)
+    report = analyse_entry(ENTRY)
+    assert report["longest_word"] == len("unionised,"), (
+        f"longest word mismatch: {report['longest_word']}"
+    )
+    print(
+        f"validator self-test passed: {len(bad_entries)} bad entries "
+        f"rejected, real entry passes all validators"
+    )
+    return True
+
+
 def main():
     if "--self-test" in sys.argv:
         self_test()
+        self_test_validators()
         return 0
     path = write_entry(ENTRY)
     print(f"wrote {len(ENTRY)} characters to {path}")
